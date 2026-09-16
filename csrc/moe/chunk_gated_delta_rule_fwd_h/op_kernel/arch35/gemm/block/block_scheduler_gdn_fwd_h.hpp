@@ -182,7 +182,7 @@ struct BlockSchedulerGdnFwdH {
         vBlockSize = vHeadDim;
         taskNum = batch * vNumHead;
         headGroups = vNumHead / kNumHead;
-        uint32_t maxTaskCntPerLoop = (taskNum > 1) ? PING_PONG_STAGES : 1;
+        uint32_t maxTaskCntPerLoop = taskNum > cubeCoreNum ? PING_PONG_STAGES : 1;
         taskStride = cubeCoreNum * maxTaskCntPerLoop;
         for (uint32_t streamId = 0; streamId < PING_PONG_STAGES; ++streamId) {
             auto& stream = runningQ.streams[streamId];
