@@ -74,6 +74,7 @@ public:
         constexpr uint32_t PING_G_INPUT_BUF_OFFSET = 164 * 1024;
         constexpr uint32_t PONG_G_INPUT_BUF_OFFSET = 165 * 1024;
         constexpr uint32_t SHARE_BUF_OFFSET = 166 * 1024;
+        constexpr uint32_t GATHER_IDX_BUF_OFFSET = 167 * 1024;
 
         calcUbTensor = resource.ubBuf.template GetBufferByByte<float>(CALC_BUF_OFFSET);
 
@@ -96,6 +97,7 @@ public:
         wideIoUbTensor_pong = resource.ubBuf.template GetBufferByByte<VElementOutput>(PONG_WIDE_IO_BUF_OFFSET);
 
         gBrcbUbTensor_ = resource.ubBuf.template GetBufferByByte<float>(SHARE_BUF_OFFSET);
+        gatherIdxUbTensor = resource.ubBuf.template GetBufferByByte<uint32_t>(GATHER_IDX_BUF_OFFSET);
 
     }
 
@@ -178,14 +180,10 @@ public:
             AscendC::PipeBarrier<PIPE_V>();
         }
 
-        AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID3 + pingpongFlag);
-        AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID3 + pingpongFlag);
-        float inputVal = gUbTensor.GetValue(mActual - 1);
-        AscendC::SetFlag<AscendC::HardEvent::S_V>(EVENT_ID3 + pingpongFlag);
-        AscendC::WaitFlag<AscendC::HardEvent::S_V>(EVENT_ID3 + pingpongFlag);
-
         AscendC::PipeBarrier<PIPE_V>();
-        AscendC::Duplicate<float>(gLastUbTensor, inputVal, mActual);
+        AscendC::Duplicate<uint32_t>(gatherIdxUbTensor, mActual - 1, mActual);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Gather<float>(gLastUbTensor, gUbTensor, gatherIdxUbTensor, 0, mActual);
         AscendC::PipeBarrier<PIPE_V>();
 
         AscendC::Sub<float>(gUbTensor, gLastUbTensor, gUbTensor, mActual);
@@ -501,6 +499,8 @@ private:
     AscendC::LocalTensor<VElementOutput> wideIoUbTensor_pong;
 
     AscendC::LocalTensor<float> gBrcbUbTensor_;
+
+    AscendC::LocalTensor<uint32_t> gatherIdxUbTensor;
 
 };
 }

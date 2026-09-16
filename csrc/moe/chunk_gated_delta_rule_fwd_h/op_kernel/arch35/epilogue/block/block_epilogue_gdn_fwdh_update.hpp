@@ -81,6 +81,8 @@ public:
         hUbTensor_pong = resource.ubBuf.template GetBufferByByte<HElementOutput>(UPDATE_SCRATCH_BUF_OFFSET);
         finalOutputUbTensor_pong = resource.ubBuf.template GetBufferByByte<FinalStateElement>(UPDATE_SCRATCH_BUF_OFFSET);
         glastUbTensor_pong = resource.ubBuf.template GetBufferByByte<float>(UPDATE_G_BUF_OFFSET);
+        gLastRawUbTensor_ping = resource.ubBuf.template GetBufferByByte<GElementInput>(PING_BUF_1_OFFSET);
+        gLastRawUbTensor_pong = resource.ubBuf.template GetBufferByByte<GElementInput>(PONG_BUF_1_OFFSET);
 
         if constexpr (kGated) {
             gkLastUbTensor_ping = resource.ubBuf.template GetBufferByByte<float>(PING_G_SUB_BUF_OFFSET);
@@ -213,19 +215,22 @@ public:
         AscendC::LocalTensor<FinalStateElement> finalOutputUbTensor = isPing ? finalOutputUbTensor_ping : finalOutputUbTensor_pong;
         AscendC::LocalTensor<float> glastUbTensor = isPing ? glastUbTensor_ping : glastUbTensor_pong;
 
-        GElementInput gLastVal = gInputThisSubBlock.GetValue(chunkSize-1);
-        float gLastFloat = 0.0f;
+        AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0 + pingpongFlag);
         if constexpr(std::is_same<GElementInput, float>::value) {
-            gLastFloat = gLastVal;
-        } else if constexpr(std::is_same<GElementInput, half>::value) {
-            gLastFloat = (float)gLastVal;
-        } else if constexpr(std::is_same<GElementInput, bfloat16_t>::value) {
-            gLastFloat = AscendC::ToFloat(gLastVal);
+            AscendC::DataCopyParams gLastParams{1, sizeof(GElementInput), 0, 0};
+            AscendC::DataCopyPadParams gLastPadParams{false, 0, 0, 0};
+            AscendC::DataCopyPad(glastUbTensor, gInputThisSubBlock[chunkSize - 1], gLastParams, gLastPadParams);
+        } else {
+            AscendC::LocalTensor<GElementInput> gLastRawUbTensor = isPing ? gLastRawUbTensor_ping : gLastRawUbTensor_pong;
+            AscendC::DataCopyParams gLastParams{1, sizeof(GElementInput), 0, 0};
+            AscendC::DataCopyPadParams gLastPadParams{false, 0, 0, 0};
+            AscendC::DataCopyPad(gLastRawUbTensor, gInputThisSubBlock[chunkSize - 1], gLastParams, gLastPadParams);
+            AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0 + pingpongFlag);
+            AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0 + pingpongFlag);
+            AscendC::Cast(glastUbTensor, gLastRawUbTensor, AscendC::RoundMode::CAST_NONE, 1);
         }
-        glastUbTensor.SetValue(0, gLastFloat);
-
-        AscendC::SetFlag<AscendC::HardEvent::S_V>(EVENT_ID3 + pingpongFlag);
-        AscendC::WaitFlag<AscendC::HardEvent::S_V>(EVENT_ID3 + pingpongFlag);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0 + pingpongFlag);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0 + pingpongFlag);
         AscendC::Exp(glastUbTensor, glastUbTensor, 1);
         AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID3 + pingpongFlag);
         AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID3 + pingpongFlag);
@@ -233,8 +238,7 @@ public:
         if constexpr (kGated) {
             AscendC::SetFlag<AscendC::HardEvent::S_MTE2>(EVENT_ID1 + pingpongFlag);
         }
-        AscendC::SetFlag<AscendC::HardEvent::S_V>(EVENT_ID3 + pingpongFlag);
-        AscendC::WaitFlag<AscendC::HardEvent::S_V>(EVENT_ID3 + pingpongFlag);
+        AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID0 + pingpongFlag);
 
         Arch::CrossCoreWaitFlag(cube2Done);
         // fix: need to adapt kGated. issue: A5 do not have vdim128 branch.
@@ -386,6 +390,9 @@ private:
     AscendC::LocalTensor<HElementOutput> hUbTensor_pong;
     AscendC::LocalTensor<FinalStateElement> finalOutputUbTensor_pong;
     AscendC::LocalTensor<float> glastUbTensor_pong;
+
+    AscendC::LocalTensor<GElementInput> gLastRawUbTensor_ping;
+    AscendC::LocalTensor<GElementInput> gLastRawUbTensor_pong;
 
     AscendC::LocalTensor<float> gkLastUbTensor_ping;
     AscendC::LocalTensor<float> gkLastUbTensor_pong;
