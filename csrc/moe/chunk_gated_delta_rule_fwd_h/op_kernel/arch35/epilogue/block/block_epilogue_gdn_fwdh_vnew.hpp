@@ -336,7 +336,7 @@ public:
             intriParams.srcGap = 0;
             intriParams.dstGap = mActualPadded - mActualThisSubBlock;
             uint32_t l1Addr = rowBegin * SIZE_16_NUM_PER_C0;
-            AscendC::DataCopy(vnewdecayOutput[l1Addr], vNewDecayUbTensor, intriParams);
+            AscendC::DataCopy(l1VUpdate[l1Addr], vNewDecayUbTensor, intriParams);
             AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);
             AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);
             if constexpr (!kGated) {
@@ -429,7 +429,7 @@ public:
             intriParams.srcGap = 0;
             intriParams.dstGap = mActualPadded - rowsThisTile;
             uint32_t l1Addr = rowStart * SIZE_16_NUM_PER_C0;
-            AscendC::DataCopy(vnewdecayOutput[l1Addr], vNewDecayUbTensor, intriParams);
+            AscendC::DataCopy(l1VUpdate[l1Addr], vNewDecayUbTensor, intriParams);
             AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);
             AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID1 + pingpongFlag);
             if constexpr (!kGated) {
