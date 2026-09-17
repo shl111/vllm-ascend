@@ -14,6 +14,14 @@ from collections.abc import Callable
 import torch
 from vllm.triton_utils import tl, triton
 
+# Internal chunk size of the AscendC chunk_gated_delta_rule_fwd_h /
+# chunk_fwd_o kernels on the GDN path. 128 halves the per-chunk fixed
+# overheads (fixpipe call latency, cross-core flag round trips) compared
+# to the previous value of 64 and is measured ~32% faster on Atlas A5.
+# NOTE: some prebuilt-meta field names still carry the legacy "chunk64"
+# suffix; they are derived from this constant.
+GDN_FWD_H_CHUNK_SIZE = 128
+
 
 def prepare_lens(cu_seqlens: torch.LongTensor) -> torch.LongTensor:
     return cu_seqlens[1:] - cu_seqlens[:-1]

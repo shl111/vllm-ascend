@@ -34,13 +34,14 @@ from vllm.v1.attention.backends.utils import (
 from vllm.v1.kv_cache_interface import AttentionSpec
 
 from vllm_ascend.ops.triton.fla.utils import (
+    GDN_FWD_H_CHUNK_SIZE,
     prepare_chunk_indices,
     prepare_chunk_offsets,
     prepare_final_chunk_indices,
     prepare_update_chunk_offsets,
 )
 
-_GDN_CHUNK_SIZE = 64
+_GDN_CHUNK_SIZE = GDN_FWD_H_CHUNK_SIZE
 # Keep this aligned with solve_tril.LARGE_BLOCK_T in ops/triton/fla/solve_tril.py.
 _GDN_SOLVE_TRIL_LARGE_BLOCK_SIZE = 608 * 2
 _GDN_CUMSUM_WORKING_SET = 2**18
