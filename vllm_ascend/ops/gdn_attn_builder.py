@@ -34,14 +34,15 @@ from vllm.v1.attention.backends.utils import (
 from vllm.v1.kv_cache_interface import AttentionSpec
 
 from vllm_ascend.ops.triton.fla.utils import (
-    GDN_FWD_H_CHUNK_SIZE,
+    get_gdn_fwd_h_chunk_size,
     prepare_chunk_indices,
     prepare_chunk_offsets,
     prepare_final_chunk_indices,
     prepare_update_chunk_offsets,
 )
 
-_GDN_CHUNK_SIZE = GDN_FWD_H_CHUNK_SIZE
+# Resolved at meta-build time (device type may be unknown at import time).
+_GDN_CHUNK_SIZE = get_gdn_fwd_h_chunk_size
 # Keep this aligned with solve_tril.LARGE_BLOCK_T in ops/triton/fla/solve_tril.py.
 _GDN_SOLVE_TRIL_LARGE_BLOCK_SIZE = 608 * 2
 _GDN_CUMSUM_WORKING_SET = 2**18
@@ -185,13 +186,13 @@ def _build_non_spec_chunked_prefill_metadata(
         )
     else:
         gdn_num_heads = builder.vllm_config.model_config.get_num_attention_heads(builder.vllm_config.parallel_config)
-    cumsum_chunks = max(1, _GDN_CUMSUM_WORKING_SET // (gdn_num_heads * _GDN_CHUNK_SIZE))
+    cumsum_chunks = max(1, _GDN_CUMSUM_WORKING_SET // (gdn_num_heads * _GDN_CHUNK_SIZE()))
     cumsum_chunk_size = 1 if cumsum_chunks <= 1 else 1 << (cumsum_chunks - 1).bit_length()
 
-    chunk_indices_chunk64 = prepare_chunk_indices(cu_seqlens_cpu, _GDN_CHUNK_SIZE)
-    chunk_offsets_chunk64 = prepare_chunk_offsets(cu_seqlens_cpu, _GDN_CHUNK_SIZE)
-    update_chunk_offsets_chunk64 = prepare_update_chunk_offsets(cu_seqlens_cpu, _GDN_CHUNK_SIZE)
-    final_chunk_indices_chunk64 = prepare_final_chunk_indices(cu_seqlens_cpu, _GDN_CHUNK_SIZE)
+    chunk_indices_chunk64 = prepare_chunk_indices(cu_seqlens_cpu, _GDN_CHUNK_SIZE())
+    chunk_offsets_chunk64 = prepare_chunk_offsets(cu_seqlens_cpu, _GDN_CHUNK_SIZE())
+    update_chunk_offsets_chunk64 = prepare_update_chunk_offsets(cu_seqlens_cpu, _GDN_CHUNK_SIZE())
+    final_chunk_indices_chunk64 = prepare_final_chunk_indices(cu_seqlens_cpu, _GDN_CHUNK_SIZE())
     chunk_indices_large_block = prepare_chunk_indices(
         cu_seqlens_cpu,
         _GDN_SOLVE_TRIL_LARGE_BLOCK_SIZE,

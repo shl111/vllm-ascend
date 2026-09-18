@@ -21,8 +21,10 @@ import torch
 import torch.nn.functional as F
 
 from vllm_ascend._310p.ops.fla.l2norm import l2norm_310p
+from vllm_ascend.ops.triton.fla.utils import get_gdn_fwd_h_chunk_size
 
-CHUNK_SIZE = 128
+# 128 on A5 (validated); 64 elsewhere until validated on that platform.
+CHUNK_SIZE = get_gdn_fwd_h_chunk_size()
 
 
 def _expand_qk_to_v_heads(x: torch.Tensor, num_v_heads: int) -> torch.Tensor:
