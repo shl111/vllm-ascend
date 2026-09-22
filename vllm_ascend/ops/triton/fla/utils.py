@@ -9,10 +9,35 @@
 # ruff: noqa: E501
 import contextlib
 import functools
+import os
 from collections.abc import Callable
 
 import torch
 from vllm.triton_utils import tl, triton
+
+# Chunk size for the GDN WY chain (cumsum / kkt / solve_tril / wy) and the
+# AscendC fwd_h / fwd_o kernels. 128 is only enabled on A5, whose kernel
+# implementation is validated at 128; other platforms keep 64 (their UB
+# layouts and register budgets were tuned for 64).
+# NOTE: some prebuilt-meta field names still carry the legacy "chunk64"
+# suffix; they are derived from this value.
+_GDN_CHUNK_SIZE_ENV = "VLLM_ASCEND_GDN_CHUNK_SIZE"
+
+
+def get_gdn_fwd_h_chunk_size() -> int:
+    # Test escape hatch: force a chunk size on any platform, e.g. to probe
+    # 128 on A2 / older branches. Unset -> platform-gated default.
+    override = os.getenv(_GDN_CHUNK_SIZE_ENV)
+    if override:
+        return int(override)
+    try:
+        from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type
+
+        if get_ascend_device_type() == AscendDeviceType.A5:
+            return 128
+    except Exception:
+        pass
+    return 64
 
 
 def prepare_lens(cu_seqlens: torch.LongTensor) -> torch.LongTensor:
