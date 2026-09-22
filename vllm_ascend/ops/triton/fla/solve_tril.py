@@ -328,6 +328,93 @@ def merge_16x16_to_64x64_inverse_kernel(
     tl.store(ptr_Ai, zero_block, mask=mask_store)
 
 
+@triton.heuristics({"IS_VARLEN": lambda args: args["cu_seqlens"] is not None})
+@triton.jit(do_not_specialize=["T", "H"])
+def merge_2x64_to_128x128_inverse_kernel(
+    A,
+    Ai64,
+    Ai,
+    cu_seqlens,
+    chunk_indices,
+    T,
+    H,
+    IS_VARLEN: tl.constexpr,
+):
+    i_t, i_bh = tl.program_id(0), tl.program_id(1)
+    i_b, i_h = i_bh // H, i_bh % H
+    if IS_VARLEN:
+        i_n, i_t = (
+            tl.load(chunk_indices + i_t * 2).to(tl.int32),
+            tl.load(chunk_indices + i_t * 2 + 1).to(tl.int32),
+        )
+        bos, eos = (
+            tl.load(cu_seqlens + i_n).to(tl.int32),
+            tl.load(cu_seqlens + i_n + 1).to(tl.int32),
+        )
+        T = eos - bos
+    else:
+        bos, eos = i_b * T, i_b * T + T
+
+    A += (bos * H + i_h) * 128
+    Ai64 += (bos * H + i_h) * 64
+    Ai += (bos * H + i_h) * 128
+
+    offs_r = tl.arange(0, 64)
+    offs_c = tl.arange(0, 64)
+
+    # Ai11: inverse of the upper diagonal quadrant, from the BT=64 pass
+    offs_m11 = i_t * 128 + offs_r
+    mask_11 = offs_m11[:, None] < T
+    Ai_11 = tl.load(Ai64 + offs_m11[:, None] * (H * 64) + offs_c[None, :], mask=mask_11, other=0.0).to(tl.float32)
+
+    # Ai22 / A21: lower sub-block rows
+    offs_m22 = i_t * 128 + 64 + offs_r
+    mask_22 = offs_m22[:, None] < T
+    Ai_22 = tl.load(Ai64 + offs_m22[:, None] * (H * 64) + offs_c[None, :], mask=mask_22, other=0.0).to(tl.float32)
+    A_21 = tl.load(A + offs_m22[:, None] * (H * 128) + offs_c[None, :], mask=mask_22, other=0.0).to(tl.float32)
+
+    Ai_21 = -tl.dot(tl.dot(Ai_22, A_21, input_precision="ieee"), Ai_11, input_precision="ieee")
+
+    p_Ai_11 = Ai + offs_m11[:, None] * (H * 128) + offs_c[None, :]
+    tl.store(p_Ai_11, Ai_11.to(p_Ai_11.dtype.element_ty, fp_downcast_rounding="rtne"), mask=mask_11)
+
+    # zero out the upper-right quadrant (upper rows, cols 64-127)
+    offs_c_up = 64 + offs_c
+    p_Ai_zero = Ai + offs_m11[:, None] * (H * 128) + offs_c_up[None, :]
+    zero_block = tl.zeros((64, 64), dtype=p_Ai_zero.dtype.element_ty)
+    tl.store(p_Ai_zero, zero_block, mask=mask_11)
+
+    p_Ai_21 = Ai + offs_m22[:, None] * (H * 128) + offs_c[None, :]
+    tl.store(p_Ai_21, Ai_21.to(p_Ai_21.dtype.element_ty, fp_downcast_rounding="rtne"), mask=mask_22)
+
+    p_Ai_22 = Ai + offs_m22[:, None] * (H * 128) + offs_c_up[None, :]
+    tl.store(p_Ai_22, Ai_22.to(p_Ai_22.dtype.element_ty, fp_downcast_rounding="rtne"), mask=mask_22)
+
+
+def _gather_diag_quadrants(A: torch.Tensor, cu_seqlens: torch.Tensor | None) -> torch.Tensor:
+    """Gather each 64-row sub-block's diagonal quadrant of A[..., 128] into cols [0, 64).
+
+    Row indices are unchanged, so downstream row addressing matches A. For row r
+    of its sequence, the source columns are ((r % 128) // 64) * 64 + arange(64):
+    upper sub-block rows read A11 (cols 0-64), lower ones read A22 (cols 64-128).
+    """
+    B, T, H, _ = A.shape
+    rows = torch.arange(T, device=A.device)
+    if cu_seqlens is not None:
+        cu = cu_seqlens.to(torch.long)
+        rows = rows - cu[torch.searchsorted(cu[1:], rows, right=True)]
+    col_idx = (((rows % 128) // 64) * 64)[:, None] + torch.arange(64, device=A.device)[None, :]
+    return A.gather(-1, col_idx[None, :, None, :].expand(B, T, H, 64))
+
+
+def _expand_sub_block_indices(chunk_indices: torch.Tensor) -> torch.Tensor:
+    """Expand (n, i) indices of 128-chunks into 64-sub-block indices (n, 2i), (n, 2i + 1)."""
+    ci = chunk_indices.repeat_interleave(2, dim=0)
+    parity = (torch.arange(ci.shape[0], device=ci.device) % 2).to(ci.dtype)
+    ci[:, 1] = ci[:, 1] * 2 + parity
+    return ci
+
+
 def solve_tril(
     A: torch.Tensor,
     cu_seqlens: torch.Tensor | None = None,
@@ -341,7 +428,7 @@ def solve_tril(
 
     Args:
         A (torch.Tensor):
-            [B, T, H, BT], where BT should only be 16, 32, or 64.
+            [B, T, H, BT], where BT should only be 16, 32, 64, or 128.
         cu_seqlens (torch.Tensor):
             The cumulative sequence lengths of the input tensor. Default: `None`.
         output_dtype (torch.dtype):
@@ -351,9 +438,24 @@ def solve_tril(
     Returns:
         (I + A)^-1 with the same shape as A
     """
-    assert A.shape[-1] in [16, 32, 64]
+    assert A.shape[-1] in [16, 32, 64, 128]
 
     B, T, H, BT = A.shape
+    is_bt128 = BT == 128
+    if is_bt128:
+        # 2x2 block composition over 64-sub-blocks:
+        #   [I+A11, 0    ]^-1   [Ai11, 0   ]
+        #   [A21,   I+A22]    = [Ai21, Ai22]
+        # Ai11/Ai22 reuse the existing BT=64 kernels on a column-gathered view
+        # of A (row domain unchanged); Ai21 = -Ai22 @ A21 @ Ai11 is fused in
+        # merge_2x64_to_128x128_inverse_kernel.
+        A_orig, chunk_indices_128 = A, chunk_indices_bt
+        A = _gather_diag_quadrants(A, cu_seqlens)
+        BT = 64
+        if cu_seqlens is not None:
+            if chunk_indices_128 is None:
+                chunk_indices_128 = prepare_chunk_indices(cu_seqlens, 128)
+            chunk_indices_bt = _expand_sub_block_indices(chunk_indices_128)
     Ad = torch.empty(B, T, H, 16, device=A.device, dtype=torch.float if BT != 16 else output_dtype)
 
     LARGE_BLOCK_T = 608 * 2
@@ -401,4 +503,20 @@ def solve_tril(
         num_stages=3,
     )
 
-    return Ai
+    if not is_bt128:
+        return Ai
+
+    Ai128 = torch.empty(B, T, H, 128, device=A.device, dtype=output_dtype)
+    NT = len(chunk_indices_128) if cu_seqlens is not None else triton.cdiv(T, 128)
+    merge_2x64_to_128x128_inverse_kernel[NT, B * H](
+        A=A_orig,
+        Ai64=Ai,
+        Ai=Ai128,
+        cu_seqlens=cu_seqlens,
+        chunk_indices=chunk_indices_128,
+        T=T,
+        H=H,
+        num_warps=4,
+        num_stages=3,
+    )
+    return Ai128
