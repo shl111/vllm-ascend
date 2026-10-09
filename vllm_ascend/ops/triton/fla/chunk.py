@@ -68,6 +68,7 @@ def chunk_gated_delta_rule_fwd(
         g_cumsum=g,
         cu_seqlens=cu_seqlens,
         chunk_indices=chunk_indices_chunk64,
+        chunk_size=chunk_size,
         output_dtype=torch.float32,
     )
     A = solve_tril(
