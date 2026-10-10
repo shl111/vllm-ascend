@@ -152,6 +152,7 @@ def chunk_gated_delta_rule_fwd(
             chunk_offsets=chunk_offsets_chunk64,
             update_chunk_offsets=update_chunk_offsets_chunk64,
             num_decodes=actual_num_decodes,
+            chunk_size=chunk_size,
         )
         all_final_state = get_pcp_group().all_gather(final_state.unsqueeze(0), 0)
         final_chunk_indices = final_chunk_indices_chunk64
@@ -191,6 +192,7 @@ def chunk_gated_delta_rule_fwd(
                 cu_seqlens=cu_seqlens,
                 chunk_indices=chunk_indices_chunk64,
                 chunk_offsets=chunk_offsets_chunk64,
+                chunk_size=chunk_size,
             )
             h = h.transpose(1, 2).contiguous()
             v_new = v_new.transpose(1, 2).contiguous()
