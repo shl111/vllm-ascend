@@ -402,7 +402,12 @@ def _gather_diag_quadrants(A: torch.Tensor, cu_seqlens: torch.Tensor | None) -> 
     rows = torch.arange(T, device=A.device)
     if cu_seqlens is not None:
         cu = cu_seqlens.to(torch.long)
-        rows = rows - cu[torch.searchsorted(cu[1:], rows, right=True)]
+        # Sequence index of global row r == count of interior boundaries <= r.
+        # searchsorted would dispatch to aclnnSearchSorted, which is an AI CPU
+        # (host-side) implementation and serializes per layer; this stays on
+        # Vector cores: an O(T x N) broadcast + sum, negligible for N sequences.
+        seq_id = (rows[:, None] >= cu[None, 1:-1]).sum(1)
+        rows = rows - cu[seq_id]
     col_idx = (((rows % 128) // 64) * 64)[:, None] + torch.arange(64, device=A.device)[None, :]
     return A.gather(-1, col_idx[None, :, None, :].expand(B, T, H, 64))
 
