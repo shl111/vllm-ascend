@@ -16,27 +16,24 @@ import torch
 from vllm.triton_utils import tl, triton
 
 # Chunk size for the GDN WY chain (cumsum / kkt / solve_tril / wy) and the
-# AscendC fwd_h / fwd_o kernels. 128 is only enabled on A5, whose kernel
-# implementation is validated at 128; other platforms keep 64 (their UB
-# layouts and register budgets were tuned for 64).
+# AscendC fwd_h / fwd_o kernels. Default stays 64 (stock behavior on every
+# platform): the fwd_h win at 128 scales with per-card v_head count while the
+# WY-chain tile cost scales with T, so on head-sliced deployments (TP >= 4)
+# 128 measures 9-15% TTFT slower than 64 even at full 128-row chunks. The 128
+# profile remains available and validated on A5 -- set VLLM_ASCEND_GDN_CHUNK_
+# SIZE=128 for single-card / high-head-count, long-context prefill workloads
+# (fwd_h -31% there).
 # NOTE: some prebuilt-meta field names still carry the legacy "chunk64"
 # suffix; they are derived from this value.
 _GDN_CHUNK_SIZE_ENV = "VLLM_ASCEND_GDN_CHUNK_SIZE"
 
 
 def get_gdn_fwd_h_chunk_size() -> int:
-    # Test escape hatch: force a chunk size on any platform, e.g. to probe
-    # 128 on A2 / older branches. Unset -> platform-gated default.
+    # Opt-in switch: force a chunk size on any platform, e.g. 128 on A5 for
+    # head-rich long-context prefill, or 64 elsewhere. Unset -> 64 (stock).
     override = os.getenv(_GDN_CHUNK_SIZE_ENV)
     if override:
         return int(override)
-    try:
-        from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type
-
-        if get_ascend_device_type() == AscendDeviceType.A5:
-            return 128
-    except Exception:
-        pass
     return 64
 
 
