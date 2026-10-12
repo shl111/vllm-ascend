@@ -55,6 +55,7 @@ def chunk_gated_delta_rule_fwd(
     update_chunk_offsets_chunk64 = None if prebuilt_meta is None else prebuilt_meta.update_chunk_offsets_chunk64
     final_chunk_indices_chunk64 = None if prebuilt_meta is None else prebuilt_meta.final_chunk_indices_chunk64
     chunk_indices_large_block = None if prebuilt_meta is None else prebuilt_meta.chunk_indices_large_block
+    solve_tril_rows = None if prebuilt_meta is None else prebuilt_meta.solve_tril_rows
     g = chunk_local_cumsum(
         g,
         chunk_size=chunk_size,
@@ -76,6 +77,7 @@ def chunk_gated_delta_rule_fwd(
         cu_seqlens=cu_seqlens,
         chunk_indices_large_block=chunk_indices_large_block,
         chunk_indices_bt=chunk_indices_chunk64,
+        rows=solve_tril_rows,
         output_dtype=k.dtype,
     )
     w, u = recompute_w_u_fwd(

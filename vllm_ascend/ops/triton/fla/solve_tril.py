@@ -391,23 +391,28 @@ def merge_2x64_to_128x128_inverse_kernel(
     tl.store(p_Ai_22, Ai_22.to(p_Ai_22.dtype.element_ty, fp_downcast_rounding="rtne"), mask=mask_22)
 
 
-def _gather_diag_quadrants(A: torch.Tensor, cu_seqlens: torch.Tensor | None) -> torch.Tensor:
+def _gather_diag_quadrants(A: torch.Tensor, cu_seqlens: torch.Tensor | None, rows: torch.Tensor | None = None) -> torch.Tensor:
     """Gather each 64-row sub-block's diagonal quadrant of A[..., 128] into cols [0, 64).
 
     Row indices are unchanged, so downstream row addressing matches A. For row r
     of its sequence, the source columns are ((r % 128) // 64) * 64 + arange(64):
     upper sub-block rows read A11 (cols 0-64), lower ones read A22 (cols 64-128).
+
+    `rows`, when provided, is the precomputed in-sequence row per global token
+    (int64 [T], e.g. from the per-step builder meta); otherwise it is derived
+    from cu_seqlens here.
     """
     B, T, H, _ = A.shape
-    rows = torch.arange(T, device=A.device)
-    if cu_seqlens is not None:
-        cu = cu_seqlens.to(torch.long)
-        # Sequence index of global row r == count of interior boundaries <= r.
-        # searchsorted would dispatch to aclnnSearchSorted, which is an AI CPU
-        # (host-side) implementation and serializes per layer; this stays on
-        # Vector cores: an O(T x N) broadcast + sum, negligible for N sequences.
-        seq_id = (rows[:, None] >= cu[None, 1:-1]).sum(1)
-        rows = rows - cu[seq_id]
+    if rows is None:
+        rows = torch.arange(T, device=A.device)
+        if cu_seqlens is not None:
+            cu = cu_seqlens.to(torch.long)
+            # Sequence index of global row r == count of interior boundaries <= r.
+            # searchsorted would dispatch to aclnnSearchSorted, which is an AI CPU
+            # (host-side) implementation and serializes per layer; this stays on
+            # Vector cores: an O(T x N) broadcast + sum, negligible for N sequences.
+            seq_id = (rows[:, None] >= cu[None, 1:-1]).sum(1)
+            rows = rows - cu[seq_id]
     col_idx = (((rows % 128) // 64) * 64)[:, None] + torch.arange(64, device=A.device)[None, :]
     return A.gather(-1, col_idx[None, :, None, :].expand(B, T, H, 64))
 
@@ -425,6 +430,7 @@ def solve_tril(
     cu_seqlens: torch.Tensor | None = None,
     chunk_indices_large_block: torch.Tensor | None = None,
     chunk_indices_bt: torch.Tensor | None = None,
+    rows: torch.Tensor | None = None,
     output_dtype: torch.dtype = torch.float,
 ) -> torch.Tensor:
     """
@@ -455,7 +461,7 @@ def solve_tril(
         # of A (row domain unchanged); Ai21 = -Ai22 @ A21 @ Ai11 is fused in
         # merge_2x64_to_128x128_inverse_kernel.
         A_orig, chunk_indices_128 = A, chunk_indices_bt
-        A = _gather_diag_quadrants(A, cu_seqlens)
+        A = _gather_diag_quadrants(A, cu_seqlens, rows)
         BT = 64
         if cu_seqlens is not None:
             if chunk_indices_128 is None:

@@ -92,6 +92,7 @@ class GDNChunkedPrefillMetadata:
     num_decodes: int
     cu_seqlens_kern: tuple[int, ...] | None = None
     keep_meta: torch.Tensor | None = None
+    solve_tril_rows: torch.Tensor | None = None
 
 
 @dataclass
@@ -200,6 +201,14 @@ def _build_non_spec_chunked_prefill_metadata(
 
     cu_seqlens_host = tuple(cu_seqlens_cpu.to(torch.int64).reshape(-1).tolist())
     num_decodes = sum(1 for seq_start, seq_end in zip(cu_seqlens_host, cu_seqlens_host[1:]) if seq_end - seq_start == 1)
+    # In-sequence row per global token (int64 [T]) for the solve_tril BT=128
+    # gather: depends only on (T, cu_seqlens), so derive it once per step on
+    # CPU instead of per layer on device.
+    solve_tril_rows = None
+    if _GDN_CHUNK_SIZE == 128:
+        seq_bounds = zip(cu_seqlens_cpu[:-1].tolist(), cu_seqlens_cpu[1:].tolist())
+        solve_tril_rows = torch.cat([torch.arange(int(end - start)) for start, end in seq_bounds])
+        solve_tril_rows = solve_tril_rows.to(device=device, non_blocking=True)
     # Pre-compute compact cu_seqlens for AscendC kernels so each layer
     # can reuse them instead of calling _compact_empty_segments again.
     cu_seqlens_kern, _, keep_meta = _compact_empty_segments(cu_seqlens_host, None, device=device)
@@ -220,6 +229,7 @@ def _build_non_spec_chunked_prefill_metadata(
         num_decodes=num_decodes,
         cu_seqlens_kern=cu_seqlens_kern,
         keep_meta=keep_meta,
+        solve_tril_rows=solve_tril_rows,
     )
 
 
