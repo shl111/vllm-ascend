@@ -37,11 +37,19 @@ def recompute_w_u_fwd_kernel(
     BK: tl.constexpr,
     BV: tl.constexpr,
     IS_VARLEN: tl.constexpr,
+    HEADS_ON_GRID: tl.constexpr,
 ):
     T_max = T
     i_t_o = tl.program_id(0)
+    if HEADS_ON_GRID:
+        # One (chunk, head) per program: parallelism NT*B*H instead of NT*B.
+        # At BT=128 the resident b_A tile is 64KB and the default (NT, B) grid
+        # leaves fewer programs than AIVs with an H-deep serial head loop.
+        i_bh_start, i_bh_end = tl.program_id(1), tl.program_id(1) + 1
+    else:
+        i_bh_start, i_bh_end = 0, H
 
-    for i_bh in range(H):
+    for i_bh in range(i_bh_start, i_bh_end):
         i_b, i_h = i_bh // H, i_bh % H
         if IS_VARLEN:
             i_n, i_t = (
@@ -119,7 +127,8 @@ def recompute_w_u_fwd(
     w = k.new_empty(B, T, H, K)
     beta = beta.transpose(1, 2).contiguous()
     g_cumsum = g_cumsum.transpose(1, 2).contiguous()
-    recompute_w_u_fwd_kernel[(NT, B)](
+    heads_on_grid = BT == 128
+    recompute_w_u_fwd_kernel[(NT, B * H if heads_on_grid else B)](
         k=k,
         v=v,
         beta=beta,
@@ -137,6 +146,7 @@ def recompute_w_u_fwd(
         BT=BT,
         BK=BK,
         BV=BV,
+        HEADS_ON_GRID=heads_on_grid,
         num_warps=4,
         num_stages=3,
     )
